@@ -24,10 +24,15 @@ def _same_location(left: AnalysisIssue, right: AnalysisIssue) -> bool:
 def _duplicate(left: AnalysisIssue, right: AnalysisIssue) -> bool:
     if left.category != right.category or not _same_location(left, right):
         return False
-    ratio = SequenceMatcher(
+    text_ratio = SequenceMatcher(
         None, similarity_key(left.original_text), similarity_key(right.original_text)
     ).ratio()
-    return ratio >= 0.84
+    explanation_ratio = SequenceMatcher(
+        None, similarity_key(left.explanation), similarity_key(right.explanation)
+    ).ratio()
+    return text_ratio >= 0.84 or (
+        text_ratio >= 0.75 and explanation_ratio >= 0.82
+    )
 
 
 def _quality(issue: AnalysisIssue) -> tuple[float, int, int, int]:
@@ -35,6 +40,19 @@ def _quality(issue: AnalysisIssue) -> tuple[float, int, int, int]:
     suggestion = int(bool(issue.suggested_text or issue.replacement_question))
     severity = 2 - SEVERITY_RANK[issue.severity]
     return (issue.confidence, location, suggestion, severity)
+
+
+def sort_issues(issues: list[AnalysisIssue]) -> list[AnalysisIssue]:
+    return sorted(
+        issues,
+        key=lambda issue: (
+            SEVERITY_RANK[issue.severity],
+            issue.page_number or 10**9,
+            int(issue.block_id.split("-")[-1])
+            if issue.block_id and issue.block_id.split("-")[-1].isdigit()
+            else 10**9,
+        ),
+    )
 
 
 def merge_results(results: list[AnalysisResult]) -> AnalysisResult:
@@ -53,15 +71,7 @@ def merge_results(results: list[AnalysisResult]) -> AnalysisResult:
             elif _quality(candidate) > _quality(issues[duplicate_index]):
                 issues[duplicate_index] = candidate
 
-    issues.sort(
-        key=lambda issue: (
-            SEVERITY_RANK[issue.severity],
-            issue.page_number or 10**9,
-            int(issue.block_id.split("-")[-1])
-            if issue.block_id and issue.block_id.split("-")[-1].isdigit()
-            else 10**9,
-        )
-    )
+    issues = sort_issues(issues)
 
     base = results[0].document_summary.model_copy(deep=True)
     base.detected_languages = sorted(
@@ -74,24 +84,31 @@ def merge_results(results: list[AnalysisResult]) -> AnalysisResult:
     ]
     base.total_questions = sum(totals) if totals else None
     if len(results) > 1:
-        base.summary = " ".join(
-            result.document_summary.summary.strip() for result in results
+        base.summary = (
+            f"Đã phân tích học liệu theo {len(results)} phần. "
+            "Tóm tắt cuối được tạo ở bước kiểm duyệt."
         )
+
+    recommendations = list(
+        dict.fromkeys(
+            recommendation.strip()
+            for result in results
+            for recommendation in result.general_recommendations
+            if recommendation.strip()
+        )
+    )[:5]
+    limitations = list(
+        dict.fromkeys(
+            limitation.strip()
+            for result in results
+            for limitation in result.limitations
+            if limitation.strip()
+        )
+    )[:8]
 
     return AnalysisResult(
         document_summary=base,
         issues=issues,
-        general_recommendations=list(
-            dict.fromkeys(
-                recommendation
-                for result in results
-                for recommendation in result.general_recommendations
-            )
-        ),
-        limitations=list(
-            dict.fromkeys(
-                limitation for result in results for limitation in result.limitations
-            )
-        ),
+        general_recommendations=recommendations,
+        limitations=limitations,
     )
-

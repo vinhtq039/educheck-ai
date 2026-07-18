@@ -1,5 +1,66 @@
 # KẾ HOẠCH XÂY DỰNG TOOL AI KIỂM TRA HỌC LIỆU WORD VÀ PDF
 
+## 0. Cập nhật kiến trúc: giáo án + học liệu
+
+Phiên bản hiện tại sử dụng **một bộ gồm hai tài liệu**:
+
+1. **Giáo án** (`.docx` hoặc `.pdf`, ưu tiên `.docx`).
+2. **Học liệu cần kiểm tra** (`.docx` hoặc `.pdf`).
+
+Các yêu cầu cũ nói rằng mỗi lần chỉ tải hoặc phân tích một file được thay thế bởi
+quy tắc hai file này.
+
+### Thứ tự xử lý bắt buộc
+
+```text
+Tải giáo án + học liệu
+    ↓
+Kiểm tra và trích xuất giáo án
+    ↓
+AI chuẩn hóa giáo án thành LessonPlanProfile
+    ├── môn học, khối/lớp, chủ đề
+    ├── mục tiêu và phạm vi kiến thức
+    ├── kỹ năng/năng lực và hoạt động
+    ├── tiêu chí đánh giá
+    └── thông tin chưa rõ cần xác minh
+    ↓
+Kiểm tra và trích xuất học liệu
+    ↓
+AI phân tích học liệu với LessonPlanProfile làm căn cứ
+    ↓
+Hiển thị học liệu được đánh dấu + giáo án đối chiếu + báo cáo
+```
+
+### Nguyên tắc dữ liệu
+
+* `LessonPlanProfile` là ngữ cảnh chuẩn hóa, không dùng chung schema issue của học liệu.
+* `AnalysisResult` chỉ chứa lỗi và đề xuất gắn với học liệu.
+* Số trang và `block_id` trong issue luôn thuộc học liệu, không thuộc giáo án.
+* Nếu giáo án thiếu hoặc mơ hồ, AI không được kết luận học liệu sai chỉ dựa trên suy đoán;
+  phải giảm confidence và yêu cầu giáo viên xác minh.
+* Báo cáo DOCX/JSON phải ghi cả tên giáo án, tên học liệu và hồ sơ giáo án đã dùng.
+* Khi một trong hai file thay đổi, kết quả của cả bộ tài liệu phải được xóa.
+
+### Kiểm soát chất lượng đầu ra AI
+
+* Sử dụng `OPENAI_TEXT_VERBOSITY=low` làm mặc định.
+* Mỗi issue chỉ mô tả một vấn đề; giải thích tối đa hai câu.
+* Issue về độ phù hợp bắt buộc phải có `lesson_plan_reference`.
+* Critical chỉ hợp lệ khi confidence từ `0.8` trở lên.
+* Confidence dưới `0.7` bắt buộc đặt `requires_human_review=true`.
+* Sau khi gộp kết quả các chunk, chạy một lượt AI kiểm duyệt cuối.
+* Lượt kiểm duyệt chỉ được giữ, sửa hoặc loại issue đã có; không được tạo issue mới.
+* Code phải bảo toàn category, nguyên văn, trang, block và số câu của issue qua bước
+  kiểm duyệt.
+* Tóm tắt cuối tối đa ba câu; đề xuất chung tối đa năm mục.
+
+### Giao diện
+
+* Có hai khu vực upload riêng, nút phân tích chỉ bật khi đã có cả hai file.
+* Tiến trình thể hiện rõ hai giai đoạn: phân tích giáo án trước, kiểm tra học liệu sau.
+* Khu vực tài liệu bên trái có hai tab: `Học liệu đã đánh dấu` và `Giáo án đối chiếu`.
+* Báo cáo bên phải hiển thị căn cứ trích xuất từ giáo án trước danh sách lỗi học liệu.
+
 ## 1. Mục tiêu dự án
 
 Xây dựng một web tool cá nhân cho một người sử dụng, cho phép tải lên một tài liệu học liệu định dạng:

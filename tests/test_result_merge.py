@@ -63,7 +63,7 @@ def test_orders_by_severity() -> None:
         issue_id="c",
         severity=IssueSeverity.CRITICAL,
         category=IssueCategory.ENGLISH_GRAMMAR,
+        confidence=0.9,
     )
     merged = merge_results([result_with(suggestion), result_with(critical)])
     assert [item.issue_id for item in merged.issues] == ["c", "s"]
-

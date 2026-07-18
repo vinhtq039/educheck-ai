@@ -7,6 +7,8 @@ import pytest
 from config.settings import Settings
 from schemas.analysis import AnalysisResult, DocumentSummary
 from schemas.document import DocumentChunk, DocumentType
+from schemas.lesson_plan import LessonPlanProfile
+from schemas.review import FinalReviewResult
 from services.openai_service import OpenAIService, OpenAIServiceError
 
 
@@ -82,6 +84,7 @@ def test_uses_responses_structured_output_and_applies_pdf_page_offset() -> None:
     assert call["model"] == "gpt-5.6-sol"
     assert call["text_format"] is AnalysisResult
     assert call["reasoning"] == {"effort": "medium"}
+    assert call["text"] == {"verbosity": "low"}
     user_content = call["input"][1]["content"]
     assert user_content[0]["type"] == "input_file"
     assert user_content[0]["file_data"].startswith("data:application/pdf;base64,")
@@ -126,3 +129,61 @@ def test_requires_openai_api_key() -> None:
     )
     with pytest.raises(OpenAIServiceError, match="OPENAI_API_KEY"):
         OpenAIService(no_key)
+
+
+def test_lesson_plan_uses_separate_structured_output() -> None:
+    profile = LessonPlanProfile(
+        source_document_type="docx",
+        subject="Toán",
+        grade_level="6",
+        topic="Phân số",
+        objectives=["Nhận biết phân số."],
+        summary="Bài học nhập môn phân số.",
+    )
+    responses = FakeResponses([profile])
+    service = OpenAIService(settings(), client=SimpleNamespace(responses=responses))
+    result = service.analyze_lesson_plan_chunk(
+        DocumentChunk(chunk_index=1, content="Giáo án phân số"),
+        DocumentType.DOCX,
+        "Đọc giáo án",
+    )
+    assert result.subject == "Toán"
+    call = responses.calls[0]
+    assert call["text_format"] is LessonPlanProfile
+    assert "giáo án" in call["input"][0]["content"].lower()
+
+
+def test_review_retries_when_issue_ids_do_not_match(monkeypatch) -> None:
+    monkeypatch.setattr("services.openai_service.time.sleep", lambda _seconds: None)
+    wrong = FinalReviewResult(
+        summary="Tóm tắt.",
+        reviews=[],
+        general_recommendations=[],
+        limitations=[],
+    )
+    correct = FinalReviewResult(
+        summary="Tóm tắt đã kiểm duyệt.",
+        reviews=[
+            {
+                "issue_id": "issue-1",
+                "action": "keep",
+                "severity": "warning",
+                "confidence": 0.9,
+                "explanation": "Đề bài chưa xác định yêu cầu cần thực hiện.",
+                "requires_human_review": False,
+                "review_reason": "Có bằng chứng trực tiếp.",
+            }
+        ],
+        general_recommendations=[],
+        limitations=[],
+    )
+    responses = FakeResponses([wrong, correct])
+    service = OpenAIService(
+        settings(retries=1),
+        client=SimpleNamespace(responses=responses),
+    )
+    result = service.review_analysis("Kiểm duyệt", {"issue-1"})
+    assert result.summary == "Tóm tắt đã kiểm duyệt."
+    assert len(responses.calls) == 2
+    assert responses.calls[-1]["text_format"] is FinalReviewResult
+    assert responses.calls[-1]["text"] == {"verbosity": "low"}

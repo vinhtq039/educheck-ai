@@ -29,6 +29,7 @@ class Settings:
     docx_chars_per_chunk: int
     ai_max_retries: int
     ai_timeout_seconds: int
+    openai_text_verbosity: str = "low"
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -43,6 +44,11 @@ def get_settings() -> Settings:
         raise ValueError(
             "OPENAI_REASONING_EFFORT phải là none, low, medium, high, xhigh hoặc max."
         )
+    text_verbosity = os.getenv("OPENAI_TEXT_VERBOSITY", "low").strip().lower()
+    if text_verbosity not in {"low", "medium", "high"}:
+        raise ValueError(
+            "OPENAI_TEXT_VERBOSITY phải là low, medium hoặc high."
+        )
     return Settings(
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-sol").strip(),
@@ -53,4 +59,5 @@ def get_settings() -> Settings:
         docx_chars_per_chunk=_positive_int("DOCX_CHARS_PER_CHUNK", 30000),
         ai_max_retries=max(0, int(os.getenv("AI_MAX_RETRIES", "2"))),
         ai_timeout_seconds=_positive_int("AI_TIMEOUT_SECONDS", 180),
+        openai_text_verbosity=text_verbosity,
     )
