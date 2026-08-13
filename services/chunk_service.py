@@ -12,6 +12,8 @@ def chunk_document(
 ) -> list[DocumentChunk]:
     if parsed.document_type == DocumentType.PDF:
         assert parsed.page_count is not None
+        needs_visual_input = parsed.is_scanned_pdf or parsed.has_images
+        pdf_detail = "high" if parsed.is_scanned_pdf else "low"
         if parsed.page_count <= 25:
             return [
                 DocumentChunk(
@@ -19,8 +21,30 @@ def chunk_document(
                     content=parsed.text,
                     start_page=1,
                     end_page=parsed.page_count,
-                    pdf_bytes=original_bytes,
+                    pdf_bytes=original_bytes if needs_visual_input else None,
+                    pdf_detail=pdf_detail if needs_visual_input else None,
                 )
+            ]
+        if not needs_visual_input:
+            return [
+                DocumentChunk(
+                    chunk_index=index,
+                    content="\n\n".join(
+                        page.text
+                        for page in parsed.pages
+                        if start <= page.page_number <= end
+                    ),
+                    start_page=start,
+                    end_page=end,
+                    page_offset=start - 1,
+                )
+                for index, start in enumerate(
+                    range(1, parsed.page_count + 1, pdf_pages_per_chunk),
+                    start=1,
+                )
+                for end in [
+                    min(start + pdf_pages_per_chunk - 1, parsed.page_count)
+                ]
             ]
         return [
             DocumentChunk(
@@ -33,7 +57,8 @@ def chunk_document(
                 start_page=start,
                 end_page=end,
                 page_offset=start - 1,
-                pdf_bytes=pdf_bytes,
+                pdf_bytes=pdf_bytes if needs_visual_input else None,
+                pdf_detail=pdf_detail if needs_visual_input else None,
             )
             for index, (start, end, pdf_bytes) in enumerate(
                 split_pdf_bytes(original_bytes, pdf_pages_per_chunk), start=1
@@ -76,4 +101,3 @@ def chunk_document(
         current_length += incoming
     flush()
     return chunks
-

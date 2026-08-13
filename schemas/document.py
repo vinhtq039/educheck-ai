@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +43,7 @@ class DocumentChunk(BaseModel):
     start_block: int | None = None
     end_block: int | None = None
     pdf_bytes: bytes | None = None
+    pdf_detail: Literal["low", "high"] | None = None
 
 
 class ParsedDocument(BaseModel):
@@ -58,4 +60,3 @@ class ParsedDocument(BaseModel):
         if self.document_type == DocumentType.PDF:
             return "\n\n".join(page.text for page in self.pages if page.text)
         return "\n\n".join(block.text for block in self.blocks if block.text)
-

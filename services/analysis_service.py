@@ -6,17 +6,28 @@ from config.settings import Settings
 from prompts.document_analysis_prompt import build_analysis_prompt
 from prompts.lesson_plan_prompt import build_lesson_plan_prompt
 from prompts.review_prompt import build_review_prompt
-from schemas.analysis import AnalysisResult
+from schemas.analysis import AnalysisResult, IssueCategory
 from schemas.document import DocumentType, ParsedDocument
 from schemas.lesson_plan import LessonPlanProfile
+from schemas.package import AnswerKeyProfile, TeachingContextProfile
 from services.chunk_service import chunk_document
 from services.openai_service import OpenAIService
 from services.result_merge_service import merge_results
-from services.review_service import apply_review, validate_result_locations
+from services.review_service import (
+    apply_review,
+    filter_subjective_issues,
+    validate_result_locations,
+)
 from utils.validators import FileValidationError
 
 
 ProgressCallback = Callable[[str, float], None]
+
+_DISABLED_VIETNAMESE_CATEGORIES = {
+    IssueCategory.VIETNAMESE_SPELLING,
+    IssueCategory.VIETNAMESE_GRAMMAR,
+    IssueCategory.VIETNAMESE_EXPRESSION,
+}
 
 
 def _unique_strings(values: list[str], limit: int | None = None) -> list[str]:
@@ -145,7 +156,14 @@ def analyze_document(
     settings: Settings,
     progress: ProgressCallback | None = None,
     ai_service: OpenAIService | None = None,
+    teaching_context: TeachingContextProfile | None = None,
+    answer_key: AnswerKeyProfile | None = None,
 ) -> AnalysisResult:
+    selected_checks = [
+        check
+        for check in selected_checks
+        if check not in {"vi_spelling", "vi_grammar"}
+    ]
     if not selected_checks:
         raise FileValidationError("Vui lòng chọn ít nhất một loại kiểm tra.")
     if parsed.document_type == DocumentType.DOCX and not parsed.blocks:
@@ -177,8 +195,15 @@ def analyze_document(
             lesson_plan=lesson_plan,
             selected_checks=selected_checks,
             chunk_label=f"phần {index}/{total}",
+            teaching_context=teaching_context,
+            answer_key=answer_key,
         )
         chunk_result = ai.analyze_chunk(chunk, parsed.document_type, prompt)
+        chunk_result.issues = [
+            issue
+            for issue in chunk_result.issues
+            if issue.category not in _DISABLED_VIETNAMESE_CATEGORIES
+        ]
         for issue_number, issue in enumerate(chunk_result.issues, start=1):
             issue.issue_id = f"part-{index:03d}-issue-{issue_number:03d}"
         results.append(chunk_result)
@@ -191,6 +216,10 @@ def analyze_document(
     )
     candidate = validate_result_locations(candidate, parsed)
 
+    if not candidate.issues:
+        notify("Hoàn tất; không có vấn đề cần kiểm duyệt lại", 1.0)
+        return candidate
+
     notify("Đang kiểm duyệt độ chính xác và độ cô đọng", 0.88)
     review_prompt = build_review_prompt(
         lesson_plan=lesson_plan,
@@ -199,11 +228,12 @@ def analyze_document(
             chunk_result.document_summary.summary
             for chunk_result in results
         ],
+        answer_key=answer_key,
     )
     review = ai.review_analysis(
         review_prompt,
         {issue.issue_id for issue in candidate.issues},
     )
-    result = apply_review(candidate, review)
+    result = filter_subjective_issues(apply_review(candidate, review))
     notify("Hoàn tất", 1.0)
     return result

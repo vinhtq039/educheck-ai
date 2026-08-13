@@ -1,19 +1,22 @@
 # KẾ HOẠCH XÂY DỰNG TOOL AI KIỂM TRA HỌC LIỆU WORD VÀ PDF
 
-## 0. Cập nhật kiến trúc: giáo án + học liệu
+## 0. Cập nhật kiến trúc hiện hành: bộ học liệu bốn vai trò
 
-Phiên bản hiện tại sử dụng **một bộ gồm hai tài liệu**:
+Phần này thay thế các quy tắc cũ về một file hoặc hai file ở các mục phía dưới.
+Phiên bản hiện tại sử dụng **một bộ gồm bốn vai trò**:
 
 1. **Giáo án** (`.docx` hoặc `.pdf`, ưu tiên `.docx`).
-2. **Học liệu cần kiểm tra** (`.docx` hoặc `.pdf`).
+2. **Tài liệu giảng dạy** (`.docx` hoặc `.pdf`): slideshow, handout hoặc tài liệu
+   đã dùng để giảng; cho phép nhiều file.
+3. **Bài tập học viên cần kiểm tra** (`.docx` hoặc `.pdf`).
+4. **Đáp án chính thức/hướng dẫn chấm** (`.docx` hoặc `.pdf`).
 
-Các yêu cầu cũ nói rằng mỗi lần chỉ tải hoặc phân tích một file được thay thế bởi
-quy tắc hai file này.
+Nút phân tích chỉ bật khi đã có đủ bốn vai trò.
 
 ### Thứ tự xử lý bắt buộc
 
 ```text
-Tải giáo án + học liệu
+Tải giáo án + tài liệu dạy + bài tập + đáp án
     ↓
 Kiểm tra và trích xuất giáo án
     ↓
@@ -24,22 +27,80 @@ AI chuẩn hóa giáo án thành LessonPlanProfile
     ├── tiêu chí đánh giá
     └── thông tin chưa rõ cần xác minh
     ↓
-Kiểm tra và trích xuất học liệu
+AI đọc tài liệu giảng dạy thành TeachingContextProfile
     ↓
-AI phân tích học liệu với LessonPlanProfile làm căn cứ
+Nano chỉ tách cấu trúc câu hỏi thành ExtractedQuestionSet
     ↓
-Hiển thị học liệu được đánh dấu + giáo án đối chiếu + báo cáo
+Code truy xuất dẫn chứng liên quan theo từng câu
+    ↓
+Mini tự giải theo batch khi chưa được xem đáp án
+    ├── QuestionSolutionSet
+    └── hợp nhất thành StudentQuestionSet có evidence_id
+    ↓
+AI trích xuất riêng đáp án thành AnswerKeyProfile
+    ↓
+Đối chiếu lời giải độc lập với đáp án bằng quy tắc
+    ├── match / ai_disagreement
+    ├── key_extraction_uncertain / orphan_key
+    └── chỉ gửi nhóm mơ hồ sang xác minh lần hai
+    ↓
+Hiển thị bốn tài liệu bên trái + báo cáo bên phải
 ```
 
 ### Nguyên tắc dữ liệu
 
 * `LessonPlanProfile` là ngữ cảnh chuẩn hóa, không dùng chung schema issue của học liệu.
-* `AnalysisResult` chỉ chứa lỗi và đề xuất gắn với học liệu.
-* Số trang và `block_id` trong issue luôn thuộc học liệu, không thuộc giáo án.
+* `TeachingContextProfile` phản ánh nội dung thực tế trong slideshow/handout, không
+  tự bổ sung kiến thức ngoài tài liệu.
+* `StudentQuestionSet` phải được tạo trước và không được nhận nội dung, tên file hay
+  dữ liệu từ đáp án.
+* Tách cấu trúc câu hỏi và tự giải là hai lượt riêng: nano tạo `ExtractedQuestionSet`,
+  sau đó mini tạo `QuestionSolutionSet` theo batch; không gọi API riêng cho từng câu.
+* Trước lượt tự giải, code phải truy xuất tối đa `RETRIEVAL_TOP_K` đoạn liên quan từ
+  giáo án và tài liệu dạy cho từng câu. Mỗi đoạn có `evidence_id`, tên nguồn và trang/block.
+* Truy xuất mặc định chạy cục bộ bằng đối sánh từ khóa/phạm vi, không dùng embeddings
+  và tuyệt đối không đưa file đáp án vào kho dẫn chứng của lượt tự giải.
+* `AnswerKeyProfile` chỉ trích xuất đáp án chính thức, không tự giải hoặc tự sửa.
+* `PackageComparisonResult` phải bao phủ mỗi câu hỏi và mỗi mục đáp án đúng một lần.
+* Đáp án chính thức do giáo viên cung cấp là nguồn chuẩn mặc định. Nếu lời giải độc lập
+  khác đáp án, dùng `ai_disagreement`; trạng thái này không được tính là lỗi học liệu.
+* Khi chưa đọc hoặc chưa ghép được mục đáp án, dùng `key_extraction_uncertain`; không
+  được tự kết luận file thật sự thiếu đáp án.
+* Các trạng thái cần xác minh (`conflict`, `ambiguous`, `missing_key`,
+  `key_extraction_uncertain`, `version_mismatch`) bắt buộc yêu cầu giáo viên xem lại;
+  `orphan_key` là thông tin trung tính về mục ngoài phạm vi hoặc chưa ghép.
+* Lượt đối chiếu phải chia nhóm theo `COMPARISON_BATCH_SIZE` để không tạo một request
+  hoặc structured output quá lớn.
+* Phải nhận diện phạm vi Unit/Part/Section của bài tập trước khi trích xuất đáp án.
+  Phần đáp án rõ ràng ngoài phạm vi phải được đếm riêng và không đưa vào cảnh báo.
+* Cặp một-một có câu số giống nhau và đáp án chuẩn hóa trùng chính xác được đối chiếu
+  bằng quy tắc xác định; chỉ gửi phần chưa kết luận được sang AI.
+* Cặp một-một có đáp án rõ nhưng khác nhau được ghi `ai_disagreement` bằng quy tắc;
+  không tốn thêm lượt AI và không tính là lỗi. Chỉ nhóm confidence thấp, trùng số hoặc
+  mơ hồ mới được gửi sang lượt xác minh hai.
+* Chế độ mặc định là `quick`, tập trung vào phạm vi và đối chiếu đáp án. Chế độ `full`
+  mới chạy thêm toàn bộ kiểm tra ngôn ngữ và chất lượng đề.
+* Lượt tự giải phải hoàn tất trước khi đọc đáp án. Sau đó `AnswerKeyProfile` phải được
+  truyền vào lượt phân tích toàn diện và kiểm duyệt để tránh kết luận sai do AI tự giải.
+* Nhận xét chỉ dựa vào sở thích văn phong, cách xuống dòng, độ rộng hoặc cách viết thay
+  thế nhưng câu gốc vẫn đúng và dễ hiểu phải bị loại khỏi báo cáo.
+* Dùng `gpt-5-nano` cho giáo án, tài liệu dạy và trích xuất. Dùng `gpt-5-mini`
+  cho tự giải và nhóm đối chiếu chưa kết luận được bằng quy tắc xác định.
+* Mọi response phải ghi lại input/output/reasoning/cached token và chi phí ước tính
+  theo model, công đoạn và lần thử.
+* PDF có text và không có hình không được gửi thêm file PDF. PDF scan dùng detail cao;
+  PDF có hình nhưng vẫn trích xuất được text dùng detail thấp.
+* `AnalysisResult` chỉ chứa lỗi và đề xuất gắn với bài tập học viên.
+* Số trang và `block_id` trong issue luôn thuộc bài tập, không thuộc giáo án.
 * Nếu giáo án thiếu hoặc mơ hồ, AI không được kết luận học liệu sai chỉ dựa trên suy đoán;
   phải giảm confidence và yêu cầu giáo viên xác minh.
-* Báo cáo DOCX/JSON phải ghi cả tên giáo án, tên học liệu và hồ sơ giáo án đã dùng.
-* Khi một trong hai file thay đổi, kết quả của cả bộ tài liệu phải được xóa.
+* Báo cáo DOCX/JSON phải ghi đủ bốn vai trò, ngữ cảnh, lời giải độc lập, đáp án và
+  kết quả đối chiếu.
+* Khi bất kỳ file nào thay đổi, kết quả của cả bộ tài liệu phải được xóa.
+* Khi chạy lại cùng bộ file, kết quả cũ phải được xóa trước khi bắt đầu để không hiển
+  thị nhầm nếu lượt mới thất bại.
+* Responses API phải dùng `store=false`; ứng dụng phải mô tả rõ dữ liệu vẫn chịu chính
+  sách abuse-monitoring/ZDR của OpenAI.
 
 ### Kiểm soát chất lượng đầu ra AI
 
@@ -56,10 +117,11 @@ Hiển thị học liệu được đánh dấu + giáo án đối chiếu + bá
 
 ### Giao diện
 
-* Có hai khu vực upload riêng, nút phân tích chỉ bật khi đã có cả hai file.
-* Tiến trình thể hiện rõ hai giai đoạn: phân tích giáo án trước, kiểm tra học liệu sau.
-* Khu vực tài liệu bên trái có hai tab: `Học liệu đã đánh dấu` và `Giáo án đối chiếu`.
-* Báo cáo bên phải hiển thị căn cứ trích xuất từ giáo án trước danh sách lỗi học liệu.
+* Có bốn khu vực upload theo vai trò; riêng tài liệu giảng dạy nhận nhiều file.
+* Tiến trình thể hiện sáu giai đoạn: giáo án, tài liệu dạy, tự giải bài tập, rà bài tập,
+  trích đáp án và đối chiếu.
+* Khu vực tài liệu bên trái có bốn tab: bài tập đã đánh dấu, đáp án, tài liệu dạy và giáo án.
+* Báo cáo bên phải hiển thị căn cứ bài dạy, kết quả đối chiếu và lỗi nội tại của bài tập.
 
 ## 1. Mục tiêu dự án
 
@@ -70,11 +132,9 @@ Xây dựng một web tool cá nhân cho một người sử dụng, cho phép t
 
 Tool sử dụng AI để:
 
-* Kiểm tra lỗi chính tả tiếng Việt.
-* Kiểm tra lỗi ngữ pháp tiếng Việt.
 * Kiểm tra lỗi chính tả tiếng Anh.
 * Kiểm tra lỗi ngữ pháp tiếng Anh.
-* Phát hiện câu văn khó hiểu hoặc diễn đạt chưa tự nhiên.
+* Phát hiện câu tiếng Anh khó hiểu hoặc diễn đạt chưa tự nhiên.
 * Phát hiện đề bài mơ hồ.
 * Phát hiện đề bài thiếu dữ kiện.
 * Phát hiện dữ kiện mâu thuẫn.
@@ -140,10 +200,11 @@ Tool chỉ phân tích tài liệu hiện tại. Khi người dùng chọn tài 
 
 * OpenAI Responses API.
 * SDK chính thức: `openai`.
-* Model mặc định: `gpt-5.6-sol`.
+* Model đọc/trích xuất mặc định: `gpt-5-nano`.
+* Model tự giải và xác minh mặc định: `gpt-5-mini`.
 * Kết quả AI phải trả về Structured Output theo JSON Schema, không xử lý bằng cách cắt chuỗi JSON thủ công.
 
-GPT-5.6 Sol hỗ trợ PDF, đầu vào đa phương thức và Structured Outputs.
+Các model được chọn hỗ trợ PDF/ảnh đầu vào và Structured Outputs.
 
 ### Đọc PDF
 
@@ -282,12 +343,20 @@ Tạo file `.env.example`:
 
 ```env
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5.6-sol
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5-nano
+OPENAI_SOLVING_MODEL=gpt-5-mini
+OPENAI_ESCALATION_MODEL=gpt-5-mini
+OPENAI_REASONING_EFFORT=minimal
+OPENAI_SOLVING_REASONING_EFFORT=low
+OPENAI_ESCALATION_REASONING_EFFORT=low
 MAX_FILE_SIZE_MB=30
 MAX_PDF_PAGES=150
 PDF_PAGES_PER_CHUNK=10
 DOCX_CHARS_PER_CHUNK=30000
+COMPARISON_BATCH_SIZE=40
+SOLVING_BATCH_SIZE=12
+RETRIEVAL_TOP_K=4
+RETRIEVAL_MAX_CHARS_PER_QUESTION=5000
 AI_MAX_RETRIES=2
 AI_TIMEOUT_SECONDS=180
 ```
@@ -355,8 +424,6 @@ Chú ý các câu hỏi về thì hiện tại đơn.
 
 Hiển thị checkbox:
 
-* Chính tả tiếng Việt.
-* Ngữ pháp và diễn đạt tiếng Việt.
 * Chính tả tiếng Anh.
 * Ngữ pháp và diễn đạt tiếng Anh.
 * Kiểm tra đề bài.
@@ -622,10 +689,6 @@ class IssueSeverity(str, Enum):
 
 ```python
 class IssueCategory(str, Enum):
-    VIETNAMESE_SPELLING = "vietnamese_spelling"
-    VIETNAMESE_GRAMMAR = "vietnamese_grammar"
-    VIETNAMESE_EXPRESSION = "vietnamese_expression"
-
     ENGLISH_SPELLING = "english_spelling"
     ENGLISH_GRAMMAR = "english_grammar"
     ENGLISH_EXPRESSION = "english_expression"
@@ -701,7 +764,7 @@ Không cho phép AI trả thêm markdown bên ngoài JSON.
 System prompt phải yêu cầu AI:
 
 1. Đóng vai trò trợ lý kiểm tra học liệu.
-2. Phân tích tiếng Việt và tiếng Anh.
+2. Đọc được nội dung tiếng Việt và tiếng Anh nhưng chỉ kiểm tra chất lượng ngôn ngữ tiếng Anh.
 3. Không tự ý viết lại toàn bộ tài liệu.
 4. Chỉ báo lỗi khi có lý do cụ thể.
 5. Không biến mọi khác biệt về văn phong thành lỗi.
@@ -733,28 +796,10 @@ System prompt phải yêu cầu AI:
 
 ## 13. Nội dung kiểm tra chi tiết
 
-### 13.1. Tiếng Việt
+### 13.1. Phạm vi ngôn ngữ
 
-Kiểm tra:
-
-* Chính tả.
-* Dấu câu.
-* Viết hoa.
-* Khoảng trắng.
-* Lặp từ.
-* Sai cấu trúc câu.
-* Câu thiếu thành phần.
-* Dùng từ không phù hợp.
-* Diễn đạt khó hiểu.
-* Thuật ngữ không thống nhất.
-* Cách xưng hô không thống nhất.
-
-Không báo lỗi với:
-
-* Tên riêng hợp lệ.
-* Thuật ngữ chuyên môn.
-* Cách viết cố ý trong ví dụ.
-* Câu sai được đưa vào bài tập để học sinh sửa, trừ khi đáp án cũng sai.
+Hệ thống được phép đọc nội dung tiếng Việt để hiểu giáo án, yêu cầu và ngữ cảnh, nhưng không
+kiểm tra hoặc tạo lỗi về chính tả, ngữ pháp hay cách diễn đạt tiếng Việt.
 
 ### 13.2. Tiếng Anh
 
@@ -1116,8 +1161,12 @@ Tạo `.env`:
 
 ```env
 OPENAI_API_KEY=your_api_key
-OPENAI_MODEL=gpt-5.6-sol
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5-nano
+OPENAI_SOLVING_MODEL=gpt-5-mini
+OPENAI_ESCALATION_MODEL=gpt-5-mini
+OPENAI_REASONING_EFFORT=minimal
+OPENAI_SOLVING_REASONING_EFFORT=low
+OPENAI_ESCALATION_REASONING_EFFORT=low
 ```
 
 Chạy:
@@ -1208,7 +1257,7 @@ Tool được xem là hoàn thành khi đáp ứng đầy đủ:
 4. Không có đăng nhập.
 5. Không có database.
 6. Không lưu lịch sử.
-7. Phân tích được tiếng Việt và tiếng Anh.
+7. Đọc được tài liệu tiếng Việt và tiếng Anh, chỉ kiểm tra chất lượng ngôn ngữ tiếng Anh.
 8. Phát hiện được lỗi đề bài cơ bản.
 9. Phát hiện được vấn đề câu hỏi và đáp án.
 10. Trả về vị trí trang hoặc block khi có thể.

@@ -4,12 +4,14 @@ from config.settings import Settings
 from schemas.document import DocumentBlock, DocumentType, ParsedDocument
 from schemas.analysis import AnalysisIssue, AnalysisResult, DocumentSummary
 from schemas.lesson_plan import LessonPlanProfile
+from schemas.package import AnswerKeyProfile
 from schemas.review import FinalReviewResult
 from services.analysis_service import (
     analyze_document,
     analyze_lesson_plan,
     merge_lesson_plan_profiles,
 )
+from services.review_service import filter_subjective_issues
 
 
 def settings() -> Settings:
@@ -143,6 +145,56 @@ class FakeTwoPassAI:
         )
 
 
+class FakeVietnameseIssueAI:
+    def analyze_chunk(self, chunk, document_type, prompt):
+        return AnalysisResult(
+            document_summary=DocumentSummary(
+                document_type="docx",
+                detected_languages=["vi"],
+                summary="Một học liệu.",
+            ),
+            issues=[
+                AnalysisIssue(
+                    issue_id="temporary",
+                    category="vietnamese_spelling",
+                    severity="warning",
+                    block_id="block-0001",
+                    original_text="Nội dung",
+                    explanation="Nhận xét tiếng Việt không còn thuộc phạm vi.",
+                    confidence=0.9,
+                )
+            ],
+            general_recommendations=[],
+            limitations=[],
+        )
+
+
+def test_vietnamese_language_issues_are_always_removed() -> None:
+    parsed = ParsedDocument(
+        document_type=DocumentType.DOCX,
+        blocks=[
+            DocumentBlock(
+                block_id="block-0001",
+                block_type="paragraph",
+                text="Nội dung",
+                order=1,
+            )
+        ],
+    )
+
+    result = analyze_document(
+        parsed=parsed,
+        original_bytes=b"docx",
+        metadata={"custom_request": ""},
+        lesson_plan=profile(),
+        selected_checks=["prompt_quality", "vi_spelling"],
+        settings=settings(),
+        ai_service=FakeVietnameseIssueAI(),
+    )
+
+    assert result.issues == []
+
+
 def test_learning_material_uses_lesson_plan_then_final_review() -> None:
     parsed = ParsedDocument(
         document_type=DocumentType.DOCX,
@@ -156,6 +208,20 @@ def test_learning_material_uses_lesson_plan_then_final_review() -> None:
         ],
     )
     ai = FakeTwoPassAI()
+    answer_key = AnswerKeyProfile(
+        source_file_name="key.docx",
+        entries=[
+            {
+                "entry_id": "answer-0001",
+                "question_number": "1",
+                "official_answer": "A",
+                "block_id": "block-0001",
+                "source_file_name": "key.docx",
+            }
+        ],
+        summary="Một đáp án.",
+        limitations=[],
+    )
     result = analyze_document(
         parsed=parsed,
         original_bytes=b"docx",
@@ -164,8 +230,42 @@ def test_learning_material_uses_lesson_plan_then_final_review() -> None:
         selected_checks=["prompt_quality"],
         settings=settings(),
         ai_service=ai,
+        answer_key=answer_key,
     )
     assert "LESSON PLAN PROFILE" in ai.analysis_prompt
+    assert "TRUSTED ANSWER KEY" in ai.analysis_prompt
+    assert '"official_answer":"A"' in ai.analysis_prompt
     assert "candidate_issues" in ai.review_prompt
+    assert '"official_answer":"A"' in ai.review_prompt
     assert result.document_summary.summary == "Đề bài cần nêu rõ hành động."
     assert result.issues[0].issue_id == "part-001-issue-001"
+
+
+def test_subjective_expression_preference_is_removed_after_review() -> None:
+    result = AnalysisResult(
+        document_summary=DocumentSummary(
+            document_type="docx",
+            detected_languages=["en"],
+            summary="Có một nhận xét.",
+        ),
+        issues=[
+            AnalysisIssue(
+                issue_id="issue-style",
+                category="english_expression",
+                severity="warning",
+                block_id="block-0001",
+                original_text="Choose the correct response.",
+                explanation="Có thể diễn đạt tự nhiên hơn bằng một cách viết khác.",
+                suggested_text="Choose the best response.",
+                confidence=0.9,
+            )
+        ],
+        general_recommendations=["Nên diễn đạt tự nhiên hơn."],
+        limitations=[],
+    )
+
+    filtered = filter_subjective_issues(result)
+
+    assert filtered.issues == []
+    assert filtered.general_recommendations == []
+    assert "Không phát hiện lỗi khách quan" in filtered.document_summary.summary

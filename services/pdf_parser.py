@@ -51,7 +51,9 @@ def parse_pdf(data: bytes, max_pages: int) -> ParsedDocument:
             )
 
         pages: list[PdfPage] = []
+        has_images = False
         for index, page in enumerate(document):
+            has_images = has_images or bool(page.get_images(full=True))
             raw_blocks = page.get_text("blocks", sort=True)
             blocks = [
                 PdfBlock(
@@ -89,6 +91,7 @@ def parse_pdf(data: bytes, max_pages: int) -> ParsedDocument:
             pages=pages,
             page_count=document.page_count,
             is_scanned_pdf=scanned,
+            has_images=has_images,
             warnings=warnings,
         )
     finally:
@@ -110,4 +113,3 @@ def split_pdf_bytes(data: bytes, pages_per_chunk: int) -> list[tuple[int, int, b
         return chunks
     finally:
         source.close()
-
